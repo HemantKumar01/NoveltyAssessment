@@ -1,0 +1,6 @@
+.vnev/
+__pycache__/
+
+*.env
+
+
