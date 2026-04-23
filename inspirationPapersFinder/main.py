@@ -1,28 +1,5 @@
 #!/usr/bin/env python3
-"""
-related_research_finder — CLI entry point
 
-Usage examples
---------------
-
-  # By S2 paper ID
-  python main.py 204e3073870fae3d05bcbc2f6a8e263d9b72e776
-
-  # By arXiv ID
-  python main.py "arXiv:1706.03762"
-
-  # By DOI
-  python main.py "DOI:10.18653/v1/N18-1202"
-
-  # By title (fuzzy search fallback)
-  python main.py "Attention is all you need"
-
-  # Include papers that cite the target; save results to JSON
-  python main.py "arXiv:1706.03762" --include-citations --output results.json
-
-  # Provide your S2 API key to lift rate limits (optional)
-  python main.py "arXiv:1706.03762" --api-key YOUR_KEY_HERE
-"""
 
 from __future__ import annotations
 

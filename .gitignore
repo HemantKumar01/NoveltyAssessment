@@ -3,4 +3,4 @@ __pycache__/
 
 *.env
 
-
+vertex_service_account.json

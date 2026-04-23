@@ -1,4 +1,5 @@
 import logging
+import re
 from datetime import datetime
 from typing import Any
 
@@ -15,6 +16,112 @@ logger = logging.getLogger(__name__)
 REFERENCE_DATE = datetime(2023, 10, 3)  # October 3, 2023
 MIN_ABSTRACT_LENGTH = 20
 DEFAULT_EMBEDDING_BATCH_SIZE = 32
+DEFAULT_CITATION_PROXY = 1.0
+
+
+# ---------------------------------------------------------------------------
+# Paper Normalization
+# ---------------------------------------------------------------------------
+
+
+def _flatten_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(v).strip() for v in value if isinstance(v, str) and v.strip()]
+
+
+def _extract_year_from_text(text: str) -> int | None:
+    if not text:
+        return None
+
+    # Use the most recent plausible year if multiple are present in a path/string.
+    year_matches = re.findall(r"\b(19\d{2}|20\d{2})\b", text)
+    if not year_matches:
+        return None
+
+    return max(int(y) for y in year_matches)
+
+
+def normalize_paper_record(paper: dict) -> dict:
+    """
+    Normalize heterogeneous paper formats into a common structure.
+
+    Supports both:
+    1) Semantic Scholar-like dicts with title/abstract/year/citationCount.
+    2) Parquet row dicts with summary/find_cite/target_paper fields.
+    """
+    if not isinstance(paper, dict):
+        return {}
+
+    summary = paper.get("summary") if isinstance(paper.get("summary"), dict) else {}
+    method = summary.get("method") if isinstance(summary.get("method"), dict) else {}
+    targeted_details = (
+        method.get("targeted_designs_details")
+        if isinstance(method.get("targeted_designs_details"), dict)
+        else {}
+    )
+    split_topic = (
+        summary.get("split_topic")
+        if isinstance(summary.get("split_topic"), dict)
+        else {}
+    )
+
+    find_cite = (
+        paper.get("find_cite") if isinstance(paper.get("find_cite"), dict) else {}
+    )
+    top_references = (
+        find_cite.get("top_references")
+        if isinstance(find_cite.get("top_references"), dict)
+        else {}
+    )
+
+    ref_titles = _flatten_text_list(top_references.get("title"))
+    target_paper = paper.get("target_paper") or ""
+
+    title_candidates = [
+        paper.get("title"),
+        summary.get("revised_topic"),
+        summary.get("topic"),
+        target_paper,
+        ref_titles[0] if ref_titles else "",
+    ]
+    title = next(
+        (t.strip() for t in title_candidates if isinstance(t, str) and t.strip()), ""
+    )
+
+    abstract_parts = [
+        paper.get("abstract"),
+        summary.get("motivation"),
+        method.get("targeted_designs_summary"),
+        method.get("datasets"),
+        method.get("metrics"),
+        " ".join(_flatten_text_list(targeted_details.get("description"))),
+        " ".join(_flatten_text_list(targeted_details.get("problems_solved"))),
+        " ".join(_flatten_text_list(split_topic.get("keyword"))),
+        " ".join(_flatten_text_list(split_topic.get("explanation"))),
+    ]
+    abstract = " ".join(
+        part.strip()
+        for part in abstract_parts
+        if isinstance(part, str) and part.strip()
+    )
+
+    year = paper.get("year")
+    if year is None and isinstance(target_paper, str):
+        year = _extract_year_from_text(target_paper)
+
+    citation_count = paper.get("citationCount")
+    if citation_count is None:
+        citation_count = paper.get("citations")
+
+    return {
+        "paperId": paper.get("paperId") or str(paper.get("index", "")),
+        "title": title,
+        "abstract": abstract,
+        "year": year,
+        "citationCount": citation_count,
+        "raw": paper,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -23,19 +130,7 @@ DEFAULT_EMBEDDING_BATCH_SIZE = 32
 
 
 def extract_keywords(topic: str, num_keywords: int = 5) -> list[str]:
-    """
-    Extract keywords from a research topic.
 
-    Uses a simple approach: splits topic into words, removes common stop words,
-    and returns the top keywords by frequency and position.
-
-    Args:
-        topic: The research topic/title as a string
-        num_keywords: Number of keywords to extract
-
-    Returns:
-        List of extracted keywords
-    """
     # Common English stop words
     stop_words = {
         "the",
@@ -221,16 +316,7 @@ def generate_embeddings(
 def compute_semantic_distance(
     idea_embedding: np.ndarray, paper_embeddings: np.ndarray
 ) -> np.ndarray:
-    """
-    Compute cosine distance between an idea embedding and multiple paper embeddings.
 
-    Args:
-        idea_embedding: 1D array of shape (embedding_dim,)
-        paper_embeddings: 2D array of shape (num_papers, embedding_dim)
-
-    Returns:
-        1D array of cosine distances of shape (num_papers,)
-    """
     if paper_embeddings.size == 0:
         return np.array([])
 
@@ -262,19 +348,7 @@ def compute_mean_distance(distances: np.ndarray) -> float:
 
 
 def classify_papers(papers: list[dict]) -> tuple[list[dict], list[dict]]:
-    """
-    Classify papers into historical and contemporary groups based on publication date.
 
-    Reference date: October 3, 2023
-    - Historical: papers published before the reference date
-    - Contemporary: papers published after the reference date
-
-    Args:
-        papers: List of paper dictionaries from Semantic Scholar API
-
-    Returns:
-        Tuple of (historical_papers, contemporary_papers)
-    """
     historical = []
     contemporary = []
 
@@ -282,7 +356,19 @@ def classify_papers(papers: list[dict]) -> tuple[list[dict], list[dict]]:
         year = paper.get("year")
 
         if year is None:
-            logger.debug(f"Paper {paper.get('paperId')} has no year, skipping")
+            logger.debug(
+                f"Paper {paper.get('paperId')} has no year, treating as contemporary"
+            )
+            contemporary.append(paper)
+            continue
+
+        try:
+            year = int(year)
+        except (TypeError, ValueError):
+            logger.debug(
+                f"Paper {paper.get('paperId')} has invalid year '{year}', treating as contemporary"
+            )
+            contemporary.append(paper)
             continue
 
         # Treat year as publication date (Jan 1 of that year for simplicity)
@@ -305,17 +391,6 @@ def classify_papers(papers: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 def generate_idea_text(paper: dict) -> str:
-    """
-    Generate a text representation of an idea from paper metadata.
-
-    Uses title and abstract if available, falls back to title only.
-
-    Args:
-        paper: Paper dictionary from Semantic Scholar API
-
-    Returns:
-        String representation of the paper/idea
-    """
     title = paper.get("title", "").strip()
     abstract = paper.get("abstract", "").strip()
 
@@ -355,6 +430,7 @@ def compute_novelty_score(
     papers: list[dict],
     s2_client: Any = None,
     keywords: list[str] = None,
+    papers_per_keyword: int = 10,
     embedding_model: str = "all-MiniLM-L6-v2",
 ) -> dict:
     """
@@ -367,10 +443,12 @@ def compute_novelty_score(
 
     Args:
         generated_idea: The text description of the generated idea (title + description)
-        papers: List of paper dictionaries from Semantic Scholar API.
-                If None and s2_client is provided, papers will be retrieved using keywords.
+        papers: List of paper dictionaries. Supports Semantic Scholar format and
+            parquet-style rows with summary/find_cite/target_paper fields.
+            If None and s2_client is provided, papers will be retrieved using keywords.
         s2_client: Optional S2Client instance for retrieving papers if not provided
         keywords: Optional list of keywords for paper retrieval (auto-extracted if None)
+        papers_per_keyword: Number of papers to retrieve per keyword when papers are not pre-supplied
         embedding_model: Name of sentence-transformers model to use
 
     Returns:
@@ -404,13 +482,20 @@ def compute_novelty_score(
                 keywords = extract_keywords(generated_idea)
                 logger.info(f"Extracted keywords: {keywords}")
 
-            papers = retrieve_papers_for_keywords(keywords, s2_client)
+            papers = retrieve_papers_for_keywords(
+                keywords,
+                s2_client,
+                papers_per_keyword=papers_per_keyword,
+            )
 
             if not papers:
                 raise ValueError("No papers retrieved from Semantic Scholar API")
 
+        normalized_papers = [normalize_paper_record(p) for p in papers]
+        normalized_papers = [p for p in normalized_papers if p]
+
         # Classify papers
-        historical_papers, contemporary_papers = classify_papers(papers)
+        historical_papers, contemporary_papers = classify_papers(normalized_papers)
 
         result["num_historical_papers"] = len(historical_papers)
         result["num_contemporary_papers"] = len(contemporary_papers)
@@ -459,16 +544,34 @@ def compute_novelty_score(
         cd_ideas = compute_mean_distance(contemporary_distances)
 
         # Compute citation statistics
-        contemporary_citations = [
-            p.get("citationCount", 0) for p in contemporary_papers
-        ]
-        cc = float(np.mean(contemporary_citations)) if contemporary_citations else 0.0
+        contemporary_citations = []
+        for paper in contemporary_papers:
+            citation_value = paper.get("citationCount")
+            try:
+                if citation_value is not None:
+                    contemporary_citations.append(float(citation_value))
+            except (TypeError, ValueError):
+                logger.debug(
+                    f"Invalid citationCount for paper {paper.get('paperId')}: {citation_value}"
+                )
+
+        if contemporary_citations:
+            cc = float(np.mean(contemporary_citations))
+            citation_proxy_used = False
+        else:
+            # Parquet datasets may not include citation counts.
+            cc = DEFAULT_CITATION_PROXY
+            citation_proxy_used = True
+            logger.info(
+                "No contemporary citation counts found; using citation proxy value %.2f",
+                DEFAULT_CITATION_PROXY,
+            )
 
         # Compute novelty score
         denominator = 1 + hd_ideas
         numerator = (1 + cd_ideas) * cc
         novelty_score = numerator / denominator if denominator > 0 else 0.0
-
+        #
         # Populate result
         result.update(
             {
@@ -476,6 +579,7 @@ def compute_novelty_score(
                 "historical_distance": float(hd_ideas),
                 "contemporary_distance": float(cd_ideas),
                 "contemporary_citations": float(cc),
+                "citation_proxy_used": citation_proxy_used,
             }
         )
 
@@ -497,6 +601,7 @@ def compute_novelty_scores_batch(
     ideas: list[dict],
     papers_per_idea: list[list[dict]] = None,
     s2_client: Any = None,
+    papers_per_keyword: int = 10,
     embedding_model: str = "all-MiniLM-L6-v2",
 ) -> list[dict]:
     """
@@ -508,6 +613,7 @@ def compute_novelty_scores_batch(
             - "keywords": optional list of keywords
         papers_per_idea: Optional list matching ideas, each containing paper lists
         s2_client: Optional S2Client for paper retrieval
+        papers_per_keyword: Number of papers to retrieve per keyword
         embedding_model: Name of sentence-transformers model to use
 
     Returns:
@@ -527,6 +633,7 @@ def compute_novelty_scores_batch(
             papers=papers,
             s2_client=s2_client,
             keywords=keywords,
+            papers_per_keyword=papers_per_keyword,
             embedding_model=embedding_model,
         )
 
@@ -572,6 +679,7 @@ if __name__ == "__main__":
     result = compute_novelty_score(
         generated_idea=generated_idea,
         papers=sample_papers,
+        s2_client=None,
         embedding_model="all-MiniLM-L6-v2",
     )
 

@@ -1,0 +1,33 @@
+true_label,prior_prediction,posterior_zero_prediction,posterior_few_prediction
+not novel,novel,not novel,not novel
+novel,novel,not novel,not novel
+not novel,novel,not novel,not novel
+not novel,not novel,novel,not novel
+not novel,not novel,not novel,not novel
+novel,not novel,not novel,not novel
+not novel,not novel,not novel,not novel
+novel,novel,novel,novel
+not novel,novel,novel,not novel
+not novel,novel,not novel,not novel
+novel,novel,novel,novel
+novel,novel,novel,novel
+novel,not novel,not novel,not novel
+novel,novel,not novel,not novel
+novel,novel,novel,novel
+not novel,not novel,not novel,not novel
+not novel,novel,not novel,not novel
+novel,not novel,novel,not novel
+novel,not novel,novel,novel
+novel,novel,novel,not novel
+not novel,not novel,not novel,not novel
+not novel,not novel,not novel,not novel
+novel,not novel,novel,novel
+novel,not novel,novel,not novel
+novel,novel,novel,novel
+novel,novel,novel,not novel
+novel,not novel,not novel,not novel
+novel,not novel,novel,not novel
+novel,not novel,not novel,not novel
+novel,not novel,novel,not novel
+not novel,not novel,not novel,not novel
+not novel,not novel,novel,not novel
